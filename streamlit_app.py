@@ -1,16 +1,16 @@
-# streamlit_app.py
-
 import streamlit as st
 import pandas as pd
 import joblib
 import numpy as np
+from io import BytesIO
+import base64
 
 # Load model, scaler, and dataset
 model = joblib.load('rf_crop_yield_model.pkl')
 scaler = joblib.load('scaler.pkl')
 df = pd.read_csv('processed_crop_yield.csv')
 
-# Simplified descriptions for UI clarity
+# Descriptions for UI and reporting
 simple_descriptions = {
     'NDVI_Trend': "Vegetation growth rate",
     'Rain_Sum': "Total rainfall during season (mm)",
@@ -19,7 +19,7 @@ simple_descriptions = {
     'NDVI_PeakWeek': "Week of best NDVI (crop growth)"
 }
 
-# Get context-specific default values
+# Get default values from filtered subset
 def get_defaults(crop, region, soil):
     subset = df[(df['Crop'] == crop) & (df['Region'] == region) & (df['Soil'] == soil)]
     if subset.empty:
@@ -32,73 +32,81 @@ def get_defaults(crop, region, soil):
         'NDVI_PeakWeek': subset['NDVI_PeakWeek'].mean()
     }
 
-# Make prediction and give advice
+# Create the prediction summary
 def generate_summary(user_data, defaults, prediction, crop, region, soil):
-    st.subheader("📝 Field Input Summary")
-    st.markdown(f"**Crop**: {crop}")
-    st.markdown(f"**Region**: {region}")
-    st.markdown(f"**Soil Type**: {soil}")
+    summary_html = f"<h4>📝 Field Input Summary</h4>"
+    summary_html += f"<b>Crop:</b> {crop}<br><b>Region:</b> {region}<br><b>Soil Type:</b> {soil}<br><br>"
 
+    summary_html += "<ul>"
     for key in defaults:
-        val = user_data[key]
-        is_default = val == defaults[key]
+        val = user_data[key]['value']
+        source_note = "Default" if user_data[key]['is_default'] else "User"
         label = simple_descriptions[key]
-        source_note = "Default" if is_default else "User Provided"
-        st.text(f"{key} – {label} ({source_note}: {round(defaults[key], 2)}): {round(val, 2)}")
+        summary_html += f"<li><b>{key}</b> – {label} ({source_note}: {round(defaults[key], 2)}): <b>{round(val, 2)}</b></li>"
+    summary_html += "</ul>"
 
-    st.subheader(f"🌾 Estimated Crop Yield: {prediction:.2f} tons/hectare")
+    summary_html += f"<h4>🌾 Estimated Crop Yield:</h4><p><b>{prediction:.2f} tons/hectare</b></p>"
 
-    # Agronomic Suggestions
-    st.subheader("📌 Agronomic Suggestions")
+    summary_html += "<h4>📌 Agronomic Suggestions</h4><ul>"
     suggestions = []
+    val_dict = {k: user_data[k]['value'] for k in user_data}
 
-    if user_data['NDVI_Trend'] < 0.01:
+    if val_dict['NDVI_Trend'] < 0.01:
         suggestions.append("🔎 Vegetation growth is slow — improve soil nutrition or irrigation.")
-    if user_data['Rain_Sum'] < 400:
+    if val_dict['Rain_Sum'] < 400:
         suggestions.append("💧 Low rainfall — consider drought-tolerant crop varieties.")
-    if user_data['Temp_Avg'] > 30:
+    if val_dict['Temp_Avg'] > 30:
         suggestions.append("🌡️ High temperatures — try early-season sowing next time.")
-    if user_data['NDVI_PeakWeek'] > 20:
+    if val_dict['NDVI_PeakWeek'] > 20:
         suggestions.append("⏳ Late peak growth — check fertilizer and pest schedules.")
 
     if suggestions:
         for s in suggestions:
-            st.markdown(f"- {s}")
+            summary_html += f"<li>{s}</li>"
     else:
-        st.success("✅ Excellent! All conditions are optimal for healthy yield.")
+        summary_html += "<li>✅ All field conditions are optimal for strong crop performance.</li>"
+    summary_html += "</ul>"
 
-# Streamlit UI
+    st.markdown(summary_html, unsafe_allow_html=True)
+    return summary_html
+
+# Streamlit layout
 st.set_page_config(page_title="Crop Yield Predictor", layout="centered")
 st.title("🌱 Smart Crop Yield Prediction")
-st.markdown("Provide your **field and environmental conditions** to predict expected yield and get personalized agronomic advice.")
+st.markdown("Enter your **field and environmental conditions** to predict yield and get expert advice.")
 
-# Input Section
+# Input form
 with st.form("prediction_form"):
-    crop = st.selectbox("🌾 Select Crop Type", sorted(df['Crop'].unique()))
-    region = st.selectbox("📍 Select Region", sorted(df['Region'].unique()))
-    soil = st.selectbox("🧱 Select Soil Type", sorted(df['Soil'].unique()))
+    crop = st.selectbox("🌾 Crop Type", sorted(df['Crop'].unique()))
+    region = st.selectbox("📍 Region", sorted(df['Region'].unique()))
+    soil = st.selectbox("🧱 Soil Type", sorted(df['Soil'].unique()))
 
     defaults = get_defaults(crop, region, soil)
-    st.markdown("#### 🌦️ Optional Field Metrics (leave blank to use smart defaults)")
+    st.markdown("#### 🌦️ Optional Field Metrics (press Enter to use smart defaults)")
 
     user_data = {}
     for key, desc in simple_descriptions.items():
         default_val = round(defaults[key], 2)
-        user_input = st.text_input(f"{desc} ({key})", value="", help=f"Leave empty to use default: {default_val}")
+        user_input = st.text_input(f"{desc} ({key})", value="", help=f"Leave blank to use default: {default_val}")
         if user_input.strip() == "":
-            user_data[key] = default_val
+            user_data[key] = {'value': default_val, 'is_default': True}
         else:
             try:
-                user_data[key] = float(user_input)
+                user_data[key] = {'value': float(user_input), 'is_default': False}
             except ValueError:
-                st.warning(f"⚠️ Invalid value for {key}. Default ({default_val}) will be used.")
-                user_data[key] = default_val
+                st.warning(f"⚠️ Invalid input for {key}. Using default {default_val}.")
+                user_data[key] = {'value': default_val, 'is_default': True}
 
     submitted = st.form_submit_button("🔍 Predict Yield")
 
-# Run prediction
+# Run prediction and show results
 if submitted:
-    input_df = pd.DataFrame([user_data])
-    input_scaled = scaler.transform(input_df)
+    values_only = [user_data[k]['value'] for k in user_data]
+    input_scaled = scaler.transform([values_only])
     prediction = model.predict(input_scaled)[0]
-    generate_summary(user_data, defaults, prediction, crop, region, soil)
+    summary_html = generate_summary(user_data, defaults, prediction, crop, region, soil)
+
+    # PDF-like export using HTML download
+    b64 = base64.b64encode(summary_html.encode()).decode()
+    href = f'<a href="data:text/html;base64,{b64}" download="field_report.html">📄 Download Report</a>'
+    st.markdown(href, unsafe_allow_html=True)
