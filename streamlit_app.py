@@ -39,10 +39,11 @@ def generate_summary(user_data, defaults, prediction, crop, region, soil):
 
     summary_html += "<ul>"
     for key in defaults:
-        val = user_data[key]['value']
-        source_note = "Default" if user_data[key]['is_default'] else "User"
+        val = user_data[key]['value']  # Actual value used (user or default)
+        is_default = user_data[key]['is_default']
+        source_note = "(Not Filled, So Default Values Considered)" if is_default else ""
         label = simple_descriptions[key]
-        summary_html += f"<li><b>{key}</b> – {label} ({source_note}: {round(defaults[key], 2)}): <b>{round(val, 2)}</b></li>"
+        summary_html += f"<li><b>{key}</b> – {label} {source_note}: <b>{round(val, 2)}</b></li>"
     summary_html += "</ul>"
 
     summary_html += f"<h4>🌾 Estimated Crop Yield:</h4><p><b>{prediction:.2f} tons/hectare</b></p>"
